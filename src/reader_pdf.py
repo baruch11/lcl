@@ -5,38 +5,94 @@ import pandas as pd
 
 
 def extract_df_from_bank_statement(pdf_file):
-    """extract a cleaned up dataframe from LCL bank statement """
+    """extract a cleaned up dataframe from LCL bank statement
+    Args:
+        pdf_file (str): full path of the pdf of the bank statement
+    Returns:
+        pd.DataFrame
+    """
     pdf = pdfplumber.open(pdf_file)
-    page = pdf.pages[0]
 
-    tables = page.extract_table(
+    return pd.concat([extract_df_one_page(page) for page in pdf.pages]
+                     ).reset_index(drop=True)
+
+
+def extract_df_one_page(page):
+    """Extract main bank statement table
+    Assuming that page comes from a lcl bank statement
+
+    Args:
+        page: pdfplumber.page.Page
+    """
+
+    table = page.extract_table(
         table_settings={
-            "explicit_vertical_lines": [37, 70, 358, 409, 480, 559],
+            "explicit_vertical_lines": [37, 70, 358, 409, 483, 559],
             "snap_x_tolerance": 3,
             "vertical_strategy": "explicit",
             "horizontal_strategy": "text",
         }
     )
     columns = ['DATE', 'LIBELLE', 'VALEUR', 'DEBIT', 'CREDIT']
-    date_match = r"\d{2}\.\d{2}"
 
-    first_line, last_line = -1, -1
-    for irow, row in enumerate(tables):
-        if ((first_line > 0 > last_line) and row[0] != "" and
-            re.match(date_match, row[0]) is None):
-            last_line = irow
+    dfret = pd.DataFrame(select_table_lines(table, columns),
+                         columns=columns)
+    dfret[['DEBIT', 'CREDIT']] = dfret[['DEBIT', 'CREDIT']].apply(
+        amount_to_float, axis=1)
+    dfret.VALEUR = dfret.VALEUR.apply(
+        lambda x: None if x == '' else pd.to_datetime(x, format='%d.%m.%y'))
+
+    return dfret
+
+
+def select_table_lines(table, columns):
+    """From pdfplumber output to relevant bank statement lines
+    also merge libellé on multiple lines
+
+    Args:
+        table (list of list of string) : pdfplumber extract_table output
+    Returns:
+        list of list of string
+    """
+
+    ret = []
+    start_select, stop_select = False, False
+    for row in table:
+        # use date format and money amount to detect table boundaries
+        not_a_date = (row[0] != "" and
+                      re.match(r"\d{2}\.\d{2}", row[0]) is None)
+        pattern_amount = re.compile("[0-9 ,]*")
+
+        #  special cases lcl
+        if row[-1] == '.':  # "tenue de compte"
+            row[-1] = ''
+        if row[-2] == '.':  # '.' in DEBIT
+            row[-2] = ''
+        if row[1] == "TOTAUX" or "SOLDE INTERMEDIAIRE" in row[1]:
+            continue
+
+        not_amount = pattern_amount.fullmatch(row[-1]) is None
+        if start_select and (not_a_date or not_amount):
+            stop_select = True
+        if start_select and not stop_select and row != [""] * len(columns):
+            # detect multiple line libelle and merge with previous one
+            if row[0] == "":
+                ret[-1][1] = "\n".join([ret[-1][1], row[1]])
+                continue
+            ret.append(row)
+
         if row == columns:
-            first_line = irow
+            start_select = True
 
-    dfraw = pd.DataFrame(tables[first_line+1:last_line], columns=columns)
-
-    empty_line = dfraw.apply(
-        lambda row: (row==pd.Series([""] * 5, index=columns)).all(), axis=1)
-    dfd = dfraw.drop(empty_line[empty_line].index)
-
-    return dfd
+    return ret
 
 
-if __name__ == "__main__":
-    PDF_FILE = "../data/COMPTEDEDEPOTS_00441082681_20211005.pdf"
-    print(extract_df_from_bank_statement(PDF_FILE))
+def amount_to_float(s_amount):
+    """Transform money amount (str) in float"""
+    def _amount_to_float(amount):
+        """ '12 345,4' -> 12345.4 (float)"""
+        if amount == '':
+            return None
+        return float(amount.replace(" ", "").replace(",", "."))
+    return s_amount.apply(_amount_to_float)
+
