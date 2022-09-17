@@ -3,3 +3,4 @@
 /tests/__pycache__/
 data/*.pdf
 data/dataframes.pkl
+/data/dataframes/
