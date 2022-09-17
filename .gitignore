@@ -1,3 +1,5 @@
 /.pylintrc
 /src/__pycache__/
 /tests/__pycache__/
+data/*.pdf
+data/dataframes.pkl
